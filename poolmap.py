@@ -1,14 +1,17 @@
-import math
+import argparse
 import heapq
 import itertools
 import json
-import requests
-import argparse
+import math
 import ssl
-from bitshares import BitShares
+
 import networkx as nx
 import numpy as np
+import requests
+from bitshares import BitShares
 from pyvis.network import Network
+
+from rpc import rpc_get_objects, wss_handshake
 
 
 def constant_product_output(dx, x_reserve, y_reserve):
@@ -54,23 +57,15 @@ def bootstrap_prices_from_core(G, base_token="BTS"):
         visited_pools.add(pool_id)
 
         known_token = base_token
-        unknown_token = (
-            data["asset_b"] if data["asset_a"] == known_token else data["asset_a"]
-        )
-        known_balance = (
-            data["bal_a"] if data["asset_a"] == known_token else data["bal_b"]
-        )
-        unknown_balance = (
-            data["bal_b"] if data["asset_a"] == known_token else data["bal_a"]
-        )
+        unknown_token = data["asset_b"] if data["asset_a"] == known_token else data["asset_a"]
+        known_balance = data["bal_a"] if data["asset_a"] == known_token else data["bal_b"]
+        unknown_balance = data["bal_b"] if data["asset_a"] == known_token else data["bal_a"]
 
         if unknown_balance == 0:
             continue
 
         implied_price = prices[known_token] * known_balance / unknown_balance
-        pool_value_in_bts = (
-            known_balance * prices[known_token] + unknown_balance * implied_price
-        )
+        pool_value_in_bts = known_balance * prices[known_token] + unknown_balance * implied_price
 
         heapq.heappush(
             heap,
@@ -113,20 +108,14 @@ def bootstrap_prices_from_core(G, base_token="BTS"):
 
             known = unknown_token
             other = data["asset_b"] if data["asset_a"] == known else data["asset_a"]
-            known_balance = (
-                data["bal_a"] if data["asset_a"] == known else data["bal_b"]
-            )
-            unknown_balance = (
-                data["bal_b"] if data["asset_a"] == known else data["bal_a"]
-            )
+            known_balance = data["bal_a"] if data["asset_a"] == known else data["bal_b"]
+            unknown_balance = data["bal_b"] if data["asset_a"] == known else data["bal_a"]
 
             if unknown_balance == 0 or other in prices:
                 continue
 
             implied_price = prices[known] * known_balance / unknown_balance
-            pool_value = (
-                known_balance * prices[known] + unknown_balance * implied_price
-            )
+            pool_value = known_balance * prices[known] + unknown_balance * implied_price
 
             heapq.heappush(
                 heap,
@@ -169,14 +158,12 @@ def load_precisions():
 def rpc_chunk_objects(rpc, ids, limit=100):
     chunks = [ids[i : i + limit] for i in range(0, len(ids), limit)]
     results = {}
-    print(f"Requesting {len(chunks)} chunks...\n")
+    print(f"Requesting {len(chunks)} chunks...")
     for chunk_num, chunk in enumerate(chunks, start=1):
-        print(f"\033[A{chunk_num}")
+        print(f"chunk {chunk_num}")
         try:
-            objects = rpc.rpc.get_objects(chunk)
-            for obj in objects:
-                if obj:
-                    results[obj["id"]] = obj
+            objects = rpc_get_objects(rpc, chunk)
+            results.update(objects)
         except Exception as e:
             print(f"An error occurred processing chunk {chunk_num}: {e}")
     return results
@@ -199,12 +186,12 @@ def parse_pool_data(data, cache):
 def format_thousands(number):
     return f"{number:,}"
 
+
 def sigfig(number, precision=6):
     if number == 0:
         return "0"
-    return format_thousands(
-        round(number, precision - int(math.floor(math.log10(abs(number)))))
-    )
+    return format_thousands(round(number, precision - int(math.floor(math.log10(abs(number))))))
+
 
 def generate_all_prices(rpc, pools, cache, core, mock=False):
     if mock:
@@ -226,14 +213,16 @@ def generate_all_prices(rpc, pools, cache, core, mock=False):
     graph = build_graph(balance_data)
     return bootstrap_prices_from_core(graph, core), balance_data, graph
 
+
 def load_mock_pool_data():
     return [
         ("1.19.1", "LP_SHARE_1", "1.3.0", "1.3.1"),
         ("1.19.2", "LP_SHARE_2", "1.3.1", "1.3.2"),
         ("1.19.3", "LP_SHARE_3", "1.3.2", "1.3.3"),
-        ("1.19.4", "LP_SHARE_4", "1.3.121", "1.3.0"), # XBTSX.USDT-BTS
-        ("1.19.5", "LP_SHARE_5", "1.3.0", "1.3.861"), # BTS-HONEST.MONEY
+        ("1.19.4", "LP_SHARE_4", "1.3.121", "1.3.0"),  # XBTSX.USDT-BTS
+        ("1.19.5", "LP_SHARE_5", "1.3.0", "1.3.861"),  # BTS-HONEST.MONEY
     ]
+
 
 def load_mock_precisions():
     return {
@@ -245,31 +234,61 @@ def load_mock_precisions():
         "1.3.861": {"symbol": "HONEST.MONEY", "precision": 6},
     }
 
+
 def mock_rpc_chunk_objects(ids):
     return {
         "1.19.1": {
-            "id": "1.19.1", "balance_a": "100000000", "balance_b": "10000000",
-            "asset_a": "1.3.0", "asset_b": "1.3.1", "taker_fee_percent": "10", "withdrawal_fee_percent": "0",
+            "id": "1.19.1",
+            "balance_a": "100000000",
+            "balance_b": "10000000",
+            "asset_a": "1.3.0",
+            "asset_b": "1.3.1",
+            "taker_fee_percent": "10",
+            "withdrawal_fee_percent": "0",
         },
         "1.19.2": {
-            "id": "1.19.2", "balance_a": "50000000", "balance_b": "4500000",
-            "asset_a": "1.3.1", "asset_b": "1.3.2", "taker_fee_percent": "10", "withdrawal_fee_percent": "0",
+            "id": "1.19.2",
+            "balance_a": "50000000",
+            "balance_b": "4500000",
+            "asset_a": "1.3.1",
+            "asset_b": "1.3.2",
+            "taker_fee_percent": "10",
+            "withdrawal_fee_percent": "0",
         },
         "1.19.3": {
-            "id": "1.19.3", "balance_a": "20000000", "balance_b": "100000",
-            "asset_a": "1.3.2", "asset_b": "1.3.3", "taker_fee_percent": "10", "withdrawal_fee_percent": "0",
+            "id": "1.19.3",
+            "balance_a": "20000000",
+            "balance_b": "100000",
+            "asset_a": "1.3.2",
+            "asset_b": "1.3.3",
+            "taker_fee_percent": "10",
+            "withdrawal_fee_percent": "0",
         },
-        "1.19.4": { # XBTSX.USDT-BTS
-            "id": "1.19.4", "balance_a": "1000000000", "balance_b": "100000000",
-            "asset_a": "1.3.121", "asset_b": "1.3.0", "taker_fee_percent": "10", "withdrawal_fee_percent": "0",
+        "1.19.4": {  # XBTSX.USDT-BTS
+            "id": "1.19.4",
+            "balance_a": "1000000000",
+            "balance_b": "100000000",
+            "asset_a": "1.3.121",
+            "asset_b": "1.3.0",
+            "taker_fee_percent": "10",
+            "withdrawal_fee_percent": "0",
         },
-        "1.19.5": { # BTS-HONEST.MONEY
-            "id": "1.19.5", "balance_a": "500000000", "balance_b": "50000000",
-            "asset_a": "1.3.0", "asset_b": "1.3.861", "taker_fee_percent": "10", "withdrawal_fee_percent": "0",
+        "1.19.5": {  # BTS-HONEST.MONEY
+            "id": "1.19.5",
+            "balance_a": "500000000",
+            "balance_b": "50000000",
+            "asset_a": "1.3.0",
+            "asset_b": "1.3.861",
+            "taker_fee_percent": "10",
+            "withdrawal_fee_percent": "0",
         },
     }
 
-def main():
+
+def main(
+    from_token="XBTSX.USDT", to_token="HONEST.MONEY", mock=False, result_holder=None, plot=False
+):
+    """
     parser = argparse.ArgumentParser(
         description="Find best trading paths in BitShares DEX."
     )
@@ -282,108 +301,132 @@ def main():
     parser.add_argument(
         "--mock", action="store_true", help="Use mock data instead of live data."
     )
-    args = parser.parse_args()
 
-    print("\033c")
-    if args.mock:
+    TODO: Add argparser back in
+    """
+
+    if mock:
         data = load_mock_pool_data()
         cache = load_mock_precisions()
         rpc = None
     else:
         data = load_pool_data()
         cache = load_precisions()
-        rpc = BitShares("wss://api.bts.mobi/ws", nobroadcast=True)
+        rpc = wss_handshake()
 
-    if not any(v["symbol"] == args.from_token for v in cache.values()):
-        print(f"Invalid 'from' token: {args.from_token}")
+    if not any(v["symbol"] == from_token for v in cache.values()):
+        print(f"Invalid 'from' token: {from_token}")
         return
 
-    if not any(v["symbol"] == args.to_token for v in cache.values()):
-        print(f"Invalid 'to' token: {args.to_token}")
+    if not any(v["symbol"] == to_token for v in cache.values()):
+        print(f"Invalid 'to' token: {to_token}")
         return
 
-    FROM_ID = [
-        int(k.split(".")[2]) for k, v in cache.items() if v["symbol"] == args.from_token
-    ][0]
-    TO_ID = [
-        int(k.split(".")[2]) for k, v in cache.items() if v["symbol"] == args.to_token
-    ][0]
+    FROM_ID = [int(k.split(".")[2]) for k, v in cache.items() if v["symbol"] == from_token][0]
+    TO_ID = [int(k.split(".")[2]) for k, v in cache.items() if v["symbol"] == to_token][0]
 
     pools = [i[0] for i in data]
     core = FROM_ID
 
     (prices, token_paths, pool_paths), balance_data, graph = generate_all_prices(
-        rpc, pools, cache, core, mock=args.mock
+        rpc, pools, cache, core, mock=mock
     )
 
     print("\nPATHS\n")
     print("Symbol           Price        Path")
+    if not TO_ID in token_paths:
+        print(f"No path found from {from_token} to {to_token}")
+        return
 
-    if TO_ID in token_paths:
-        token_path = token_paths[TO_ID]
-        pool_path = pool_paths[TO_ID]
-        path_str = " -> ".join([cache[f"1.3.{i}"]["symbol"] for i in token_path])
-        print(
-            cache[f"1.3.{TO_ID}"]["symbol"].ljust(16),
-            str(sigfig(prices[TO_ID])).ljust(16),
-            path_str,
-        )
+    token_path = token_paths[TO_ID]
+    pool_path = pool_paths[TO_ID]
+    path_str = " -> ".join([cache[f"1.3.{i}"]["symbol"] for i in token_path])
+    print(
+        cache[f"1.3.{TO_ID}"]["symbol"].ljust(16),
+        str(sigfig(prices[TO_ID])).ljust(16),
+        path_str,
+    )
 
-        # Create a pyvis network
-        net = Network(notebook=False, height="750px", width="100%", bgcolor="#222222", font_color="white")
-        net.from_nx(graph)
+    if result_holder is not None:
+        # values = []
+        # pool_prices = []
+        balances = []
+        fees = []
+        for token, pool_id in zip(token_path, pool_path):
+            pool = balance_data[pool_id]
+            # asset_a = pool[2]
+            # asset_b = pool[3]
+            # if asset_a in prices and asset_b in prices:
+            #     values.append(pool[0] * prices[asset_a] + pool[1] * prices[asset_b])
+            # pool_prices.append((pool[0] / pool[1]) if asset_a == token else (pool[1] / pool[0]))
+            balances.append(pool)  # if asset_a == token else (pool[1], pool[0]))
+            fees.append(pool[4])
 
-        # Set labels and colors
-        for node in net.nodes:
-            node_id = node["id"]
-            node["label"] = cache.get(f"1.3.{node_id}", {}).get("symbol", str(node_id))
-            if node_id in token_path:
-                node["color"] = "skyblue"
+        result_holder["result"] = [prices[TO_ID], token_path, pool_path, balances, fees]
+        result_holder["rpc"] = rpc
 
-        path_edges = list(zip(token_path, token_path[1:]))
-        for edge in net.edges:
-            is_path = (edge['from'], edge['to']) in path_edges or (edge['to'], edge['from']) in path_edges
-            if is_path:
-                edge["color"] = "lime"
-                edge["width"] = 2.0
-            else:
-                edge["color"] = "gray"
-                edge["width"] = 1.0
-        
-        net.set_options('''
-        var options = {
-          "nodes": {
-            "font": {
-              "size": 12
-            }
-          },
-          "edges": {
-            "color": {
-              "inherit": true
-            },
-            "smooth": {
-              "type": "continuous"
-            }
-          },
-          "physics": {
-            "forceAtlas2Based": {
-              "gravitationalConstant": -50,
-              "centralGravity": 0.01,
-              "springLength": 230,
-              "springConstant": 0.08,
-              "damping": 0.4,
-              "avoidOverlap": 0
-            },
-            "minVelocity": 0.75,
-            "solver": "forceAtlas2Based"
-          }
+    if not plot:
+        return
+
+    # Create a pyvis network
+    net = Network(
+        notebook=False, height="750px", width="100%", bgcolor="#222222", font_color="white"
+    )
+    net.from_nx(graph)
+
+    # Set labels and colors
+    for node in net.nodes:
+        node_id = node["id"]
+        node["label"] = cache.get(f"1.3.{node_id}", {}).get("symbol", str(node_id))
+        if node_id in token_path:
+            node["color"] = "skyblue"
+
+    path_edges = list(zip(token_path, token_path[1:]))
+    for edge in net.edges:
+        is_path = (edge["from"], edge["to"]) in path_edges or (
+            edge["to"],
+            edge["from"],
+        ) in path_edges
+        if is_path:
+            edge["color"] = "lime"
+            edge["width"] = 2.0
+        else:
+            edge["color"] = "gray"
+            edge["width"] = 1.0
+
+    net.set_options(
+        """
+    var options = {
+      "nodes": {
+        "font": {
+          "size": 12
         }
-        ''')
+      },
+      "edges": {
+        "color": {
+          "inherit": true
+        },
+        "smooth": {
+          "type": "continuous"
+        }
+      },
+      "physics": {
+        "forceAtlas2Based": {
+          "gravitationalConstant": -50,
+          "centralGravity": 0.01,
+          "springLength": 230,
+          "springConstant": 0.08,
+          "damping": 0.4,
+          "avoidOverlap": 0
+        },
+        "minVelocity": 0.75,
+        "solver": "forceAtlas2Based"
+      }
+    }
+    """
+    )
 
-        net.show(f"liquidity_pool_map_{args.from_token}_to_{args.to_token}.html", notebook=False)
-
-    else:
-        print(f"No path found from {args.from_token} to {args.to_token}")
+    net.show(f"liquidity_pool_map.html", notebook=False)
 
 
 if __name__ == "__main__":

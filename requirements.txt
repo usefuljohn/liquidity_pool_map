@@ -1,5 +1,5 @@
-bitshares
-requests
 networkx
-numpy
 pyvis
+requests
+bitshares
+numpy
