@@ -70,8 +70,38 @@ def rpc_get_objects(rpc, object_ids):
     """
     Return data about objects in 1.7.x, 2.4.x, 1.3.x, etc. format
     """
-    ret = wss_query(rpc, ["database", "get_objects", [object_ids]])
-    return {object_ids[idx]: item for idx, item in enumerate(ret) if item is not None}
+    if hasattr(rpc_get_objects, "cache"):
+        cache = rpc_get_objects.cache
+    else:
+        cache = {}
+
+    if isinstance(object_ids, list):
+        results = {}
+        for object_id in object_ids:
+            if object_id in cache:
+                results[object_id] = cache[object_id]
+
+        object_ids = [i for i in object_ids if i not in results]
+        if not object_ids:
+            return results
+
+        # print("querying:", object_ids)
+        ret = wss_query(rpc, ["database", "get_objects", [object_ids]])
+
+        results.update({object_ids[idx]: item for idx, item in enumerate(ret) if item is not None})
+        cache.update(results)
+    else:
+        if object_ids in cache:
+            return cache[object_ids]
+
+        # print("querying:", object_ids)
+        ret = wss_query(rpc, ["database", "get_objects", [[object_ids]]])
+
+        results = ret[0]
+        cache[object_ids] = results
+
+    rpc_get_objects.cache = cache
+    return results
 
 
 def rpc_ticker(rpc, pair):

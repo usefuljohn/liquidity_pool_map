@@ -29,7 +29,7 @@ class StdoutRedirector:
         pass  # required for some code that calls flush()
 
 
-def run_poolmap(result_holder, from_entry, to_entry, output_text, window):
+def run_poolmap(result_holder, from_entry, to_entry, amt_entry, output_text, window):
     from_token = from_entry.get()
     to_token = to_entry.get()
 
@@ -38,7 +38,12 @@ def run_poolmap(result_holder, from_entry, to_entry, output_text, window):
 
     child = threading.Thread(
         target=pathfind,
-        kwargs={"from_token": from_token, "to_token": to_token, "result_holder": result_holder},
+        kwargs={
+            "from_token": from_token,
+            "to_token": to_token,
+            "input_amount": float(amt_entry.get()),
+            "result_holder": result_holder,
+        },
     )
     child.start()
 
@@ -53,11 +58,12 @@ def run_poolmap(result_holder, from_entry, to_entry, output_text, window):
     window.after(100, stream_output)
 
 
-def build_transaction(output_text, result):
+def build_transaction(output_text, amt_entry, result):
     output_text.insert(tk.END, "\nBuilding transaction...\n")
     _, asset_ids, pool_ids, balances, fees = result["result"]
 
-    input_amt = 1
+    input_amt = float(amt_entry.get())
+    original_input_amt = float(amt_entry.get())
 
     rpc = result["rpc"]
 
@@ -85,7 +91,7 @@ def build_transaction(output_text, result):
         input_amt = output_amt
 
     print(json.dumps(edicts, indent=2))
-    print("final price:", 1 / output_amt)
+    print("final price:", original_input_amt / output_amt)
     # TODO: Implement JSON generation and saving
     output_text.insert(tk.END, "Transaction saved.\n")
 
@@ -108,22 +114,29 @@ def main():
     to_entry.grid(column=1, row=1)
     to_entry.insert(0, "IOB.XRP")
 
+    tk.Label(window, text="Amount:").grid(column=0, row=2)
+    amt_entry = tk.Entry(window, width=30)
+    amt_entry.grid(column=1, row=2)
+    amt_entry.insert(0, "1.0")
+
     save_button = tk.Button(
         window,
         text="Save Transaction",
-        command=lambda: build_transaction(output_text, result_holder),
+        command=lambda: build_transaction(output_text, amt_entry, result_holder),
     )
-    save_button.grid(column=1, row=2, pady=20)
+    save_button.grid(column=1, row=3, pady=20)
 
     output_text = scrolledtext.ScrolledText(window, width=100, height=30)
-    output_text.grid(column=0, row=3, columnspan=2)
+    output_text.grid(column=0, row=4, columnspan=2)
 
     run_button = tk.Button(
         window,
         text="Run Analysis",
-        command=lambda: run_poolmap(result_holder, from_entry, to_entry, output_text, window),
+        command=lambda: run_poolmap(
+            result_holder, from_entry, to_entry, amt_entry, output_text, window
+        ),
     )
-    run_button.grid(column=0, row=2, pady=20)
+    run_button.grid(column=0, row=3, pady=20)
 
     def gui_updater(window, text_widget, queue):
         """Transfer queued text into the ScrolledText widget periodically."""

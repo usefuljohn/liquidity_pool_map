@@ -8,9 +8,9 @@ import ssl
 import networkx as nx
 import numpy as np
 import requests
-from bitshares import BitShares
 from pyvis.network import Network
 
+from min_to_receive import wrapper
 from rpc import rpc_get_objects, wss_handshake
 
 
@@ -24,7 +24,7 @@ def build_graph(pools):
     Builds a MultiGraph where each edge represents a liquidity pool between two assets.
     """
     G = nx.MultiGraph()
-    for pool_id, (bal_a, bal_b, asset_a, asset_b, _, _) in pools.items():
+    for pool_id, (bal_a, bal_b, asset_a, asset_b, fee, _) in pools.items():
         if bal_a and bal_b:
             G.add_edge(
                 asset_a,
@@ -34,11 +34,29 @@ def build_graph(pools):
                 bal_b=bal_b,
                 asset_a=asset_a,
                 asset_b=asset_b,
+                fee=fee,
             )
     return G
 
 
-def bootstrap_prices_from_core(G, base_token="BTS"):
+def get_slippage(rpc, amount, fee, balance_a, balance_b, a_id, b_id, direction):
+    if direction == a_id:
+        balance_a, balance_b = balance_b, balance_a
+        a_id, b_id = b_id, a_id
+
+    a_id, b_id = f"1.3.{a_id}", f"1.3.{b_id}"
+
+    instant_price = balance_a / balance_b
+
+    actual_out = wrapper(rpc, amount, fee, balance_a, balance_b, a_id, b_id, a_id)
+    actual_price = (balance_a + amount) / (balance_b - actual_out)
+
+    slippage = instant_price / actual_price
+
+    return slippage, actual_price
+
+
+def bootstrap_prices_from_core(rpc, input_amount, G, base_token="BTS"):
     """
     Bootstraps token prices by propagating outward from a base token.
     """
@@ -64,17 +82,28 @@ def bootstrap_prices_from_core(G, base_token="BTS"):
         if unknown_balance == 0:
             continue
 
-        implied_price = prices[known_token] * known_balance / unknown_balance
-        pool_value_in_bts = known_balance * prices[known_token] + unknown_balance * implied_price
+        # implied_price = prices[known_token] * known_balance / unknown_balance
+        # pool_value_in_bts = known_balance * prices[known_token] + unknown_balance * implied_price
+
+        slippage, price = get_slippage(
+            rpc,
+            input_amount,
+            data["fee"],
+            data["bal_a"],
+            data["bal_b"],
+            data["asset_a"],
+            data["asset_b"],
+            known_token,
+        )
 
         heapq.heappush(
             heap,
             (
-                -pool_value_in_bts,
+                1 - slippage,
                 pool_id,
                 known_token,
                 unknown_token,
-                implied_price,
+                price,
                 [base_token, unknown_token],
                 [pool_id],
             ),
@@ -82,11 +111,11 @@ def bootstrap_prices_from_core(G, base_token="BTS"):
 
     while heap:
         (
-            neg_value,
+            base_slippage,
             pool_id,
             known_token,
             unknown_token,
-            implied_price,
+            price,
             token_path,
             pool_path,
         ) = heapq.heappop(heap)
@@ -94,7 +123,7 @@ def bootstrap_prices_from_core(G, base_token="BTS"):
         if unknown_token in prices:
             continue
 
-        prices[unknown_token] = implied_price
+        prices[unknown_token] = price
         token_paths[unknown_token] = token_path
         pool_paths[unknown_token] = pool_path
 
@@ -114,17 +143,28 @@ def bootstrap_prices_from_core(G, base_token="BTS"):
             if unknown_balance == 0 or other in prices:
                 continue
 
-            implied_price = prices[known] * known_balance / unknown_balance
-            pool_value = known_balance * prices[known] + unknown_balance * implied_price
+            # implied_price = prices[known] * known_balance / unknown_balance
+            # pool_value = known_balance * prices[known] + unknown_balance * implied_price
+
+            slippage, price = get_slippage(
+                rpc,
+                prices[known] * input_amount,
+                data["fee"],
+                data["bal_a"],
+                data["bal_b"],
+                data["asset_a"],
+                data["asset_b"],
+                known_token,
+            )
 
             heapq.heappush(
                 heap,
                 (
-                    -pool_value,
+                    1 - ((1 - base_slippage) * slippage),
                     data["pool"],
                     known,
                     other,
-                    implied_price,
+                    prices[known] * price,
                     token_path + [other],
                     pool_path + [data["pool"]],
                 ),
@@ -193,11 +233,18 @@ def sigfig(number, precision=6):
     return format_thousands(round(number, precision - int(math.floor(math.log10(abs(number))))))
 
 
-def generate_all_prices(rpc, pools, cache, core, mock=False):
+def generate_all_prices(rpc, input_amount, pools, cache, core, mock=False):
     if mock:
         pool_data = parse_pool_data(mock_rpc_chunk_objects(pools), cache)
     else:
         pool_data = parse_pool_data(rpc_chunk_objects(rpc, pools), cache)
+
+    all_assets = set()
+    for pool in pool_data.values():
+        all_assets.add(pool[4])
+        all_assets.add(pool[5])
+
+    rpc_chunk_objects(rpc, list(all_assets))
 
     balance_data = {
         pool_id: (
@@ -208,10 +255,10 @@ def generate_all_prices(rpc, pools, cache, core, mock=False):
             balance_info[2],
             balance_info[3],
         )
-        for pool_id, balance_info in zip(pool_data.keys(), pool_data.values())
+        for pool_id, balance_info in pool_data.items()
     }
     graph = build_graph(balance_data)
-    return bootstrap_prices_from_core(graph, core), balance_data, graph
+    return bootstrap_prices_from_core(rpc, input_amount, graph, core), balance_data, graph
 
 
 def load_mock_pool_data():
@@ -286,7 +333,12 @@ def mock_rpc_chunk_objects(ids):
 
 
 def main(
-    from_token="XBTSX.USDT", to_token="HONEST.MONEY", mock=False, result_holder=None, plot=False
+    from_token="XBTSX.USDT",
+    to_token="HONEST.MONEY",
+    input_amount=1,
+    mock=False,
+    result_holder=None,
+    plot=False,
 ):
     """
     parser = argparse.ArgumentParser(
@@ -329,7 +381,7 @@ def main(
     core = FROM_ID
 
     (prices, token_paths, pool_paths), balance_data, graph = generate_all_prices(
-        rpc, pools, cache, core, mock=mock
+        rpc, input_amount, pools, cache, core, mock=mock
     )
 
     print("\nPATHS\n")
