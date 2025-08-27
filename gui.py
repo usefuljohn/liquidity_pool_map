@@ -171,7 +171,7 @@ def main():
     tk.Label(window, text="Account ID:").grid(column=0, row=3)
     account_entry = tk.Entry(window, width=30)
     account_entry.grid(column=1, row=3)
-    account_entry.insert(0, "1.2.1014025")
+    account_entry.insert(0, "1.2.")
 
     save_button = tk.Button(
         window,
