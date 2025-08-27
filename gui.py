@@ -11,7 +11,7 @@ from tkinter.scrolledtext import ScrolledText
 
 from min_to_receive import wrapper
 from poolmap import main as pathfind
-from rpc import wss_handshake
+from rpc import wss_handshake, rpc_get_objects
 
 
 class StdoutRedirector:
@@ -58,12 +58,13 @@ def run_poolmap(result_holder, from_entry, to_entry, amt_entry, output_text, win
     window.after(100, stream_output)
 
 
-def build_transaction(output_text, amt_entry, result):
+def build_transaction(output_text, amt_entry, result, account_entry):
     output_text.insert(tk.END, "\nBuilding transaction...\n")
     _, asset_ids, pool_ids, balances, fees = result["result"]
 
     input_amt = float(amt_entry.get())
     original_input_amt = float(amt_entry.get())
+    account_id = account_entry.get()
 
     rpc = result["rpc"]
 
@@ -85,21 +86,69 @@ def build_transaction(output_text, amt_entry, result):
                 "amount_to_sell": input_amt,
                 "min_to_receive": output_amt,
                 "pool": pool_id,
+                "asset_id_to_sell": f"1.3.{ids[0]}",
+                "asset_id_to_receive": f"1.3.{ids[1]}",
             }
         )
 
         input_amt = output_amt
 
+    asset_ids_to_fetch = []
+    for edict in edicts:
+        asset_ids_to_fetch.append(edict["asset_id_to_sell"])
+        asset_ids_to_fetch.append(edict["asset_id_to_receive"])
+
+    asset_details = rpc_get_objects(rpc, list(set(asset_ids_to_fetch)))
+    precisions = {asset["id"]: 10 ** asset["precision"] for asset in asset_details.values()}
+
+    operations = []
+    for edict in edicts:
+        operations.append([63, {
+            "fee": {"amount": "100000", "asset_id": "1.3.0"},
+            "account": account_id,
+            "pool": edict["pool"],
+            "amount_to_sell": {"amount": str(int(edict["amount_to_sell"] * precisions[edict["asset_id_to_sell"]])), "asset_id": edict["asset_id_to_sell"]},
+            "min_to_receive": {"amount": str(int(edict["min_to_receive"] * precisions[edict["asset_id_to_receive"]])), "asset_id": edict["asset_id_to_receive"]},
+            "extensions": []
+        }])
+
+    transaction = {
+        "type": "api",
+        "id": f"{time.time()}-ehbxeor03-2",
+        "payload": {
+            "method": "injectedCall",
+            "params": [
+                "signAndBroadcast",
+                json.dumps({
+                    "ref_block_num": 0,
+                    "ref_block_prefix": 0,
+                    "expiration": "2025-08-27T13:16:38",
+                    "operations": operations,
+                    "extensions": [],
+                    "signatures": []
+                }),
+                []
+            ],
+            "appName": "Bitshares Astro UI",
+            "chain": "BTS",
+            "browser": "web browser",
+            "origin": "vaulta-exchange-haven.vercel.app",
+            "memo": False
+        }
+    }
+
+    with open("transaction.json", "w") as f:
+        json.dump(transaction, f, indent=2)
+
     print(json.dumps(edicts, indent=2))
     print("final price:", original_input_amt / output_amt)
-    # TODO: Implement JSON generation and saving
-    output_text.insert(tk.END, "Transaction saved.\n")
+    output_text.insert(tk.END, "Transaction saved to transaction.json\n")
 
 
 def main():
     # Create the main window
     window = tk.Tk()
-    window.title("Poolmap GUI")
+    window.title("BitShares Map Runner")
 
     result_holder = {}
 
@@ -119,15 +168,20 @@ def main():
     amt_entry.grid(column=1, row=2)
     amt_entry.insert(0, "1.0")
 
+    tk.Label(window, text="Account ID:").grid(column=0, row=3)
+    account_entry = tk.Entry(window, width=30)
+    account_entry.grid(column=1, row=3)
+    account_entry.insert(0, "1.2.1014025")
+
     save_button = tk.Button(
         window,
         text="Save Transaction",
-        command=lambda: build_transaction(output_text, amt_entry, result_holder),
+        command=lambda: build_transaction(output_text, amt_entry, result_holder, account_entry),
     )
-    save_button.grid(column=1, row=3, pady=20)
+    save_button.grid(column=1, row=4, pady=20)
 
     output_text = scrolledtext.ScrolledText(window, width=100, height=30)
-    output_text.grid(column=0, row=4, columnspan=2)
+    output_text.grid(column=0, row=5, columnspan=2)
 
     run_button = tk.Button(
         window,
@@ -136,7 +190,7 @@ def main():
             result_holder, from_entry, to_entry, amt_entry, output_text, window
         ),
     )
-    run_button.grid(column=0, row=3, pady=20)
+    run_button.grid(column=0, row=4, pady=20)
 
     def gui_updater(window, text_widget, queue):
         """Transfer queued text into the ScrolledText widget periodically."""
