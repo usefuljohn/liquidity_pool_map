@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import scrolledtext
 from tkinter.scrolledtext import ScrolledText
 
+from beeteos_listener import account_id_queue, run_listener
 from min_to_receive import wrapper
 from poolmap import main as pathfind
 from rpc import wss_handshake, rpc_get_objects
@@ -161,7 +162,7 @@ def main():
     tk.Label(window, text="To Token:").grid(column=0, row=1)
     to_entry = tk.Entry(window, width=30)
     to_entry.grid(column=1, row=1)
-    to_entry.insert(0, "IOB.XRP")
+    to_entry.insert(0, "GBP")
 
     tk.Label(window, text="Amount:").grid(column=0, row=2)
     amt_entry = tk.Entry(window, width=30)
@@ -205,6 +206,15 @@ def main():
             pass
         window.after(100, gui_updater, window, text_widget, queue)
 
+    def check_account_id_queue():
+        try:
+            account_id = account_id_queue.get_nowait()
+            account_entry.delete(0, tk.END)
+            account_entry.insert(0, account_id)
+        except queue.Empty:
+            pass
+        window.after(100, check_account_id_queue)
+
     q = queue.Queue()
     old_stdout = sys.stdout
     old_stderr = sys.stderr
@@ -212,6 +222,13 @@ def main():
     sys.stderr = StdoutRedirector(q)  # redirect stderr
     # Start GUI updater loop
     window.after(100, gui_updater, window, output_text, q)
+
+    # Start the beeteos listener
+    listener_thread = threading.Thread(target=run_listener, daemon=True)
+    listener_thread.start()
+
+    # Start checking for account ID updates
+    window.after(100, check_account_id_queue)
 
     # Restore stdout on close
     def on_close():
