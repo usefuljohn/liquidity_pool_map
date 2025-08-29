@@ -173,3 +173,13 @@ def rpc_get_feed(rpc, data_id):
     quote_precision = int(rpc_get_objects(rpc, [quote_asset_id])[quote_asset_id]["precision"])
     # convert fractional human price to floating point
     return (base / 10**base_precision) / (quote / 10**quote_precision)
+
+
+def get_account_by_name(rpc, account_name):
+    """
+    Get account ID by account name.
+    """
+    ret = wss_query(rpc, ["database", "get_account_by_name", [account_name]])
+    if ret:
+        return ret["id"]
+    return None

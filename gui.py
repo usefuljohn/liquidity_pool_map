@@ -6,14 +6,13 @@ import sys
 import threading
 import time
 import tkinter as tk
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from tkinter import scrolledtext
 from tkinter.scrolledtext import ScrolledText
 
-from beeteos_listener import account_id_queue, run_listener
 from min_to_receive import wrapper
 from poolmap import main as pathfind
-from rpc import wss_handshake, rpc_get_objects
+from rpc import wss_handshake, rpc_get_objects, get_account_by_name
 
 
 class StdoutRedirector:
@@ -114,7 +113,7 @@ def build_transaction(output_text, amt_entry, result, account_entry):
             "extensions": []
         }])
 
-    expiration_time = (datetime.utcnow() + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+    expiration_time = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
     transaction = {
         "type": "api",
         "id": f"{time.time()}-ehbxeor03-2",
@@ -154,6 +153,14 @@ def main():
     window.title("BitShares Map Runner")
 
     result_holder = {}
+    rpc = wss_handshake()
+
+    def get_account_id_from_name():
+        account_name = account_name_entry.get()
+        account_id = get_account_by_name(rpc, account_name)
+        if account_id:
+            account_entry.delete(0, tk.END)
+            account_entry.insert(0, account_id)
 
     # Create and pack the widgets
     tk.Label(window, text="From Token:").grid(column=0, row=0)
@@ -171,20 +178,22 @@ def main():
     amt_entry.grid(column=1, row=2)
     amt_entry.insert(0, "1.0")
 
-    tk.Label(window, text="Account ID:").grid(column=0, row=3)
+    tk.Label(window, text="Account Name:").grid(column=0, row=3)
+    account_name_entry = tk.Entry(window, width=30)
+    account_name_entry.grid(column=1, row=3)
+    account_name_entry.insert(0, "")
+
+    tk.Label(window, text="Account ID:").grid(column=0, row=4)
     account_entry = tk.Entry(window, width=30)
-    account_entry.grid(column=1, row=3)
+    account_entry.grid(column=1, row=4)
     account_entry.insert(0, "1.2.")
 
-    save_button = tk.Button(
+    get_id_button = tk.Button(
         window,
-        text="Save Transaction",
-        command=lambda: build_transaction(output_text, amt_entry, result_holder, account_entry),
+        text="Get Account ID",
+        command=get_account_id_from_name,
     )
-    save_button.grid(column=1, row=4, pady=20)
-
-    output_text = scrolledtext.ScrolledText(window, width=100, height=30)
-    output_text.grid(column=0, row=5, columnspan=2)
+    get_id_button.grid(column=2, row=0, rowspan=2, padx=10)
 
     run_button = tk.Button(
         window,
@@ -193,7 +202,17 @@ def main():
             result_holder, from_entry, to_entry, amt_entry, output_text, window
         ),
     )
-    run_button.grid(column=0, row=4, pady=20)
+    run_button.grid(column=2, row=2, rowspan=2, padx=10)
+
+    save_button = tk.Button(
+        window,
+        text="Save Transaction",
+        command=lambda: build_transaction(output_text, amt_entry, result_holder, account_entry),
+    )
+    save_button.grid(column=2, row=4, rowspan=2, padx=10)
+
+    output_text = scrolledtext.ScrolledText(window, width=100, height=30)
+    output_text.grid(column=0, row=6, columnspan=3, pady=10)
 
     def gui_updater(window, text_widget, queue):
         """Transfer queued text into the ScrolledText widget periodically."""
@@ -208,15 +227,6 @@ def main():
             pass
         window.after(100, gui_updater, window, text_widget, queue)
 
-    def check_account_id_queue():
-        try:
-            account_id = account_id_queue.get_nowait()
-            account_entry.delete(0, tk.END)
-            account_entry.insert(0, account_id)
-        except queue.Empty:
-            pass
-        window.after(100, check_account_id_queue)
-
     q = queue.Queue()
     old_stdout = sys.stdout
     old_stderr = sys.stderr
@@ -224,13 +234,6 @@ def main():
     sys.stderr = StdoutRedirector(q)  # redirect stderr
     # Start GUI updater loop
     window.after(100, gui_updater, window, output_text, q)
-
-    # Start the beeteos listener
-    listener_thread = threading.Thread(target=run_listener, daemon=True)
-    listener_thread.start()
-
-    # Start checking for account ID updates
-    window.after(100, check_account_id_queue)
 
     # Restore stdout on close
     def on_close():
