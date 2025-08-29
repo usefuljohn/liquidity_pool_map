@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from datetime import datetime, timedelta
 from tkinter import scrolledtext
 from tkinter.scrolledtext import ScrolledText
 
@@ -109,10 +110,11 @@ def build_transaction(output_text, amt_entry, result, account_entry):
             "account": account_id,
             "pool": edict["pool"],
             "amount_to_sell": {"amount": str(int(edict["amount_to_sell"] * precisions[edict["asset_id_to_sell"]])), "asset_id": edict["asset_id_to_sell"]},
-            "min_to_receive": {"amount": str(int(edict["min_to_receive"] * precisions[edict["asset_id_to_receive"]])), "asset_id": edict["asset_id_to_receive"]},
+            "min_to_receive": {"amount": "1", "asset_id": edict["asset_id_to_receive"]},
             "extensions": []
         }])
 
+    expiration_time = (datetime.utcnow() + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
     transaction = {
         "type": "api",
         "id": f"{time.time()}-ehbxeor03-2",
@@ -123,7 +125,7 @@ def build_transaction(output_text, amt_entry, result, account_entry):
                 json.dumps({
                     "ref_block_num": 0,
                     "ref_block_prefix": 0,
-                    "expiration": "2025-08-27T13:16:38",
+                    "expiration": expiration_time,
                     "operations": operations,
                     "extensions": [],
                     "signatures": []
