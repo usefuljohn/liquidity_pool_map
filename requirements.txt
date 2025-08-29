@@ -3,4 +3,4 @@ pyvis
 requests
 bitshares
 numpy
-Flask
+
