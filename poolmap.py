@@ -4,6 +4,7 @@ import itertools
 import json
 import math
 import ssl
+from collections import defaultdict
 
 import networkx as nx
 import numpy as np
@@ -39,10 +40,12 @@ def build_graph(pools):
     return G
 
 
-def get_slippage(rpc, amount, fee, balance_a, balance_b, a_id, b_id, direction):
-    if direction == a_id:
+def get_slippage(rpc, amount, fee, balance_a, balance_b, a_id, b_id, from_asset, cer_prices):
+    if from_asset == a_id:
         balance_a, balance_b = balance_b, balance_a
         a_id, b_id = b_id, a_id
+
+    cer = cer_prices[b_id] if cer_prices else None
 
     a_id, b_id = f"1.3.{a_id}", f"1.3.{b_id}"
 
@@ -51,124 +54,85 @@ def get_slippage(rpc, amount, fee, balance_a, balance_b, a_id, b_id, direction):
     actual_out = wrapper(rpc, amount, fee, balance_a, balance_b, a_id, b_id, a_id)
     actual_price = (balance_a + amount) / (balance_b - actual_out)
 
-    slippage = instant_price / actual_price
+    effective_out = max(0, actual_out - ((1 / cer) if cer_prices else 0))
+    effective_price = (balance_a + amount) / (balance_b - effective_out)
+
+    slippage = instant_price / effective_price
 
     return slippage, actual_price
 
 
-def bootstrap_prices_from_core(rpc, input_amount, G, base_token="BTS"):
+def bootstrap_prices_from_core(rpc, input_amount, G, base_token, cer_prices=None):
     """
     Bootstraps token prices by propagating outward from a base token.
     """
     prices = {base_token: 1.0}
     token_paths = {base_token: [base_token]}
     pool_paths = {base_token: []}
-    visited_pools = set()
+    minimum_slippage = defaultdict(lambda: float("-inf"))
+    visited = set()
     heap = []
 
-    for u, v, data in G.edges(data=True):
-        if base_token not in (data["asset_a"], data["asset_b"]):
-            continue
-        pool_id = data["pool"]
-        if pool_id in visited_pools:
-            continue
-        visited_pools.add(pool_id)
-
-        known_token = base_token
-        unknown_token = data["asset_b"] if data["asset_a"] == known_token else data["asset_a"]
-        known_balance = data["bal_a"] if data["asset_a"] == known_token else data["bal_b"]
-        unknown_balance = data["bal_b"] if data["asset_a"] == known_token else data["bal_a"]
-
-        if unknown_balance == 0:
-            continue
-
-        # implied_price = prices[known_token] * known_balance / unknown_balance
-        # pool_value_in_bts = known_balance * prices[known_token] + unknown_balance * implied_price
-
-        slippage, price = get_slippage(
-            rpc,
-            input_amount,
-            data["fee"],
-            data["bal_a"],
-            data["bal_b"],
-            data["asset_a"],
-            data["asset_b"],
-            known_token,
-        )
-
-        heapq.heappush(
-            heap,
-            (
-                1 - slippage,
-                pool_id,
-                known_token,
-                unknown_token,
-                price,
-                [base_token, unknown_token],
-                [pool_id],
-            ),
-        )
+    # we came from nowhere with 0 slippage and started at base_token.
+    heapq.heappush(heap, (0, base_token, 1, [base_token], []))
 
     while heap:
         (
             base_slippage,
-            pool_id,
-            known_token,
-            unknown_token,
-            price,
+            known,
+            price_to_here,
             token_path,
             pool_path,
         ) = heapq.heappop(heap)
 
-        if unknown_token in prices:
-            continue
-
-        prices[unknown_token] = price
-        token_paths[unknown_token] = token_path
-        pool_paths[unknown_token] = pool_path
-
-        for u, v, data in G.edges(data=True):
-            if data["pool"] in visited_pools:
-                continue
-            if unknown_token not in (data["asset_a"], data["asset_b"]):
+        for _, _, data in G.edges(data=True):
+            if (
+                (known not in (data["asset_a"], data["asset_b"]))
+                or (not data["bal_a"])
+                or (not data["bal_b"])
+                or (data["pool"] in visited)
+            ):
                 continue
 
-            visited_pools.add(data["pool"])
+            visited.add(data["pool"])
 
-            known = unknown_token
-            other = data["asset_b"] if data["asset_a"] == known else data["asset_a"]
-            known_balance = data["bal_a"] if data["asset_a"] == known else data["bal_b"]
-            unknown_balance = data["bal_b"] if data["asset_a"] == known else data["bal_a"]
+            a_is_known = data["asset_a"] == known
 
-            if unknown_balance == 0 or other in prices:
-                continue
-
-            # implied_price = prices[known] * known_balance / unknown_balance
-            # pool_value = known_balance * prices[known] + unknown_balance * implied_price
+            unknown = data["asset_b"] if a_is_known else data["asset_a"]
 
             slippage, price = get_slippage(
                 rpc,
-                prices[known] * input_amount,
-                data["fee"],
-                data["bal_a"],
-                data["bal_b"],
-                data["asset_a"],
-                data["asset_b"],
-                known_token,
+                amount=price_to_here * input_amount,
+                fee=data["fee"],
+                balance_a=data["bal_a"],
+                balance_b=data["bal_b"],
+                a_id=data["asset_a"],
+                b_id=data["asset_b"],
+                from_asset=known,
+                cer_prices=cer_prices,
             )
 
-            heapq.heappush(
-                heap,
-                (
-                    1 - ((1 - base_slippage) * slippage),
-                    data["pool"],
-                    known,
-                    other,
-                    prices[known] * price,
-                    token_path + [other],
-                    pool_path + [data["pool"]],
-                ),
-            )
+            core_slippage = (1 - base_slippage) * slippage
+            core_price = price_to_here * price
+
+            if minimum_slippage[unknown] < core_slippage:
+                minimum_slippage[unknown] = core_slippage
+
+                prices[unknown] = core_price
+                token_paths[unknown] = token_path + [unknown]
+                pool_paths[unknown] = pool_path + [data["pool"]]
+
+                heapq.heappush(
+                    heap,
+                    (
+                        # the heap selects the smallest item, so we want the largest remaining amount
+                        1 - core_slippage,
+                        unknown,
+                        core_price,
+                        token_paths[unknown],
+                        pool_paths[unknown],
+                    ),
+                )
 
     return prices, token_paths, pool_paths
 
@@ -258,7 +222,15 @@ def generate_all_prices(rpc, input_amount, pools, cache, core, mock=False):
         for pool_id, balance_info in pool_data.items()
     }
     graph = build_graph(balance_data)
-    return bootstrap_prices_from_core(rpc, input_amount, graph, core), balance_data, graph
+
+    # First pass: Feeless to get CER prices
+    cer_prices, token_paths, pool_paths = bootstrap_prices_from_core(rpc, 1, graph, base_token=0)
+
+    return (
+        bootstrap_prices_from_core(rpc, input_amount, graph, core, cer_prices=cer_prices),
+        balance_data,
+        graph,
+    )
 
 
 def load_mock_pool_data():

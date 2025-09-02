@@ -12,7 +12,7 @@ from tkinter.scrolledtext import ScrolledText
 
 from min_to_receive import wrapper
 from poolmap import main as pathfind
-from rpc import wss_handshake, rpc_get_objects, get_account_by_name
+from rpc import get_account_by_name, rpc_get_objects, wss_handshake
 
 
 class StdoutRedirector:
@@ -31,8 +31,8 @@ class StdoutRedirector:
 
 
 def run_poolmap(result_holder, from_entry, to_entry, amt_entry, output_text, window):
-    from_token = from_entry.get()
-    to_token = to_entry.get()
+    from_token = from_entry.get().upper()
+    to_token = to_entry.get().upper()
 
     output_text.delete(1.0, tk.END)
     output_text.insert(tk.END, f"Running analysis for {from_token} to {to_token}...\n")
@@ -104,16 +104,28 @@ def build_transaction(output_text, amt_entry, result, account_entry):
 
     operations = []
     for edict in edicts:
-        operations.append([63, {
-            "fee": {"amount": "100000", "asset_id": "1.3.0"},
-            "account": account_id,
-            "pool": edict["pool"],
-            "amount_to_sell": {"amount": str(int(edict["amount_to_sell"] * precisions[edict["asset_id_to_sell"]])), "asset_id": edict["asset_id_to_sell"]},
-            "min_to_receive": {"amount": "1", "asset_id": edict["asset_id_to_receive"]},
-            "extensions": []
-        }])
+        operations.append(
+            [
+                63,
+                {
+                    "fee": {"amount": "100000", "asset_id": "1.3.0"},
+                    "account": account_id,
+                    "pool": edict["pool"],
+                    "amount_to_sell": {
+                        "amount": str(
+                            int(edict["amount_to_sell"] * precisions[edict["asset_id_to_sell"]])
+                        ),
+                        "asset_id": edict["asset_id_to_sell"],
+                    },
+                    "min_to_receive": {"amount": "1", "asset_id": edict["asset_id_to_receive"]},
+                    "extensions": [],
+                },
+            ]
+        )
 
-    expiration_time = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+    expiration_time = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    )
     transaction = {
         "type": "api",
         "id": f"{time.time()}-ehbxeor03-2",
@@ -121,22 +133,24 @@ def build_transaction(output_text, amt_entry, result, account_entry):
             "method": "injectedCall",
             "params": [
                 "signAndBroadcast",
-                json.dumps({
-                    "ref_block_num": 0,
-                    "ref_block_prefix": 0,
-                    "expiration": expiration_time,
-                    "operations": operations,
-                    "extensions": [],
-                    "signatures": []
-                }),
-                []
+                json.dumps(
+                    {
+                        "ref_block_num": 0,
+                        "ref_block_prefix": 0,
+                        "expiration": expiration_time,
+                        "operations": operations,
+                        "extensions": [],
+                        "signatures": [],
+                    }
+                ),
+                [],
             ],
             "appName": "Bitshares Astro UI",
             "chain": "BTS",
             "browser": "web browser",
             "origin": "vaulta-exchange-haven.vercel.app",
-            "memo": False
-        }
+            "memo": False,
+        },
     }
 
     with open("transaction.json", "w") as f:
@@ -156,7 +170,7 @@ def main():
     rpc = wss_handshake()
 
     def get_account_id_from_name():
-        account_name = account_name_entry.get()
+        account_name = account_name_entry.get().lower()
         account_id = get_account_by_name(rpc, account_name)
         if account_id:
             account_entry.delete(0, tk.END)
